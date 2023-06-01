@@ -1,0 +1,245 @@
+---
+title: "R Script for Automated LASSO Predictive Modeling"
+author: "Walter Moises Avila - Cervantes-Barragan Lab Member"
+date: "2023-06-01"
+output:
+  html_document:
+    theme: flatly
+    toc: yes
+    toc_float: yes
+  pdf_document:
+    toc: yes
+subtitle: Scripts
+---
+
+```{css, echo = FALSE}
+.columns{display: flex;}
+
+body {
+  font-family: Calibri, sans-serif;
+}
+
+h3 {color: red;}
+```
+
+# Required Packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl) 
+library(glmnet) 
+library(knitr) 
+library(yaml)
+library(rmarkdown)
+```
+
+# LassoPredictiveModeling Function
+
+The `LassoPredictiveModeling` function automates the process of LASSO model selection and modeling in R. It takes a dataset and several parameters as inputs, performs cross-validation to find the optimal lambda value, builds the final LASSO model using the optimal lambda, and evaluates its performance on both the training and test sets. The function returns a list of results, including the lambda vs. mean squared error plot generated during the model selection and optimization process, the optimal lambda value, the names of the predictor variables with non-zero coefficients, the non-zero coefficients, the mean squared error on the training set, the mean squared error on the test set, and the R-squared value.
+
+**NOTE:** Your dataframe needs to be properly prepared before inputting it into the function. Specifically, the response variable you aim to predict/model must be the last column in the in your dataset. All the other columns before it must denote the predictor variables to aim to use to predict the response variable. Preparing your dataframe as such will make everything run smoothly and error-free on your end.
+
+## A Note on Choosing the Number of Folds for Cross-Validation
+
+When performing cross-validation for model evaluation, the number of folds determines how many subsets the training data is divided into. Each fold acts as a test set while the remaining folds are used for training. For a small dataset with only 10 observations and wanting to use 8 of them for training, you should consider using leave-one-out cross-validation (LOOCV).
+
+In LOOCV, each observation is treated as a separate fold, so there will be 10 folds in total. For each iteration, one observation is held out as the test set, and the remaining 9 observations are used for creating the model. This approach provides a more reliable estimate of model performance when working with limited data.
+
+As a general guideline, LOOCV is commonly used when the dataset is relatively small, typically with fewer than 100 observations. Since LOOCV uses each observation as a separate fold, it provides a more precise estimate of model performance but can be computationally expensive and time-consuming for larger datasets.
+
+As the dataset size increases, x-fold cross-validation becomes a more practical choice. Common choices for x in x-fold cross-validation are 5 or 10, although other values like 3 or 10-fold are also frequently used. These values strike a balance between computational efficiency and reliable estimation of model performance.
+
+Ultimately, the choice between LOOCV and x-fold cross-validation depends on the specific context and considerations, including the size of your dataset, computational resources, and the desired trade-off between precision and computational efficiency. It's recommended to assess the stability of the model performance estimates using different cross-validation strategies and select the one that suits your needs best.
+
+## A Note on Choosing Which Lambda to Use: lambda.min or lambda.1se
+
+When performing LASSO regression using the `glmnet package` in R, you have two different optimal lambda values: lambda.min and lambda.1se. These correspond to different levels of sparsity in the resulting model.
+
+- **lambda.min**: This is the lambda value that minimizes the mean cross-validated error. It tends to produce a more complex model with fewer zero coefficients. If you are primarily interested in predictive accuracy and don't mind having more variables in your model, lambda.min can be a good choice.
+
+- **lambda.1se**: This is the largest lambda value within one standard error of the minimum. It provides a more conservative model with a higher level of sparsity, meaning more coefficients are forced to be exactly zero. If you prioritize model interpretability and prefer a simpler model, lambda.1se can be a better choice.
+
+# Creating the Function
+
+```{r}
+LassoPredictiveModeling <- function(data, train_prop, folds, a, b, lambda_min) {
+  
+  # 1. Create training and test sets
+  train_indices <- sample(1:nrow(data),train_prop*nrow(data))  
+  training_set <- data[train_indices,]
+  test_set <- data[-train_indices,]
+  
+  # 2. Prepare inputs for glmnet::LASSO
+  cols <- colnames(training_set[,a:b]) # a and b designate the range of column indices in your dataset that denote your predictor variables
+  training_set_predictors <- as.matrix(training_set[cols])
+  training_set_output <- as.matrix(training_set[,ncol(training_set)])
+  
+  test_set_predictors <- as.matrix(test_set[cols])
+  test_set_output <- as.matrix(test_set[,ncol(test_set)])
+  
+  # 3. Cross-Validation to find Optimal Lambda
+  optimal_LASSO <- glmnet::cv.glmnet(x = training_set_predictors, 
+                                   y = training_set_output,
+                                   nfolds = folds,
+                                   alpha = 1)
+  plot(optimal_LASSO)
+  
+  if (lambda_min == TRUE) {
+    optimal_lambda <- optimal_LASSO$lambda.min
+    
+  } else if (lambda_min == FALSE) {
+    optimal_lambda <- optimal_LASSO$lambda.1se
+  }
+  
+  # 4. Creating final LASSO model with optimal lambda
+  LASSO_model <- glmnet(training_set_predictors,
+                      training_set_output,
+                      alpha = 1,
+                      lambda = optimal_lambda,
+                      standardize = TRUE)
+  
+  # 5. Assessing performance of this model on the training set
+  predicted_train <- predict(LASSO_model, newx = training_set_predictors)
+  residuals_train <- training_set_output - predicted_train
+  mse_train <- mean(residuals_train^2)
+  
+  # 6. Assessing performance of this model on the test set
+  predicted_test <- predict(LASSO_model, newx = test_set_predictors)
+  residuals_test <- test_set_output - predicted_test
+  mse_test <- mean(residuals_test^2)
+  
+  # 7. See which predictor variables have non-zero coefficients at this lambda
+  coefs <- coef(LASSO_model)
+  nonzero_coefs <- coefs[coefs!=0]
+  
+  # 8. Extract the names of these variables with non-zero coefficients
+  nonzero_indices <- which(coefs != 0)
+  names_nonzero_coefs <- colnames(training_set_predictors)[nonzero_indices]
+  
+  # 9. Calculate R-squared to determine goodness-of-fit
+  R_squared <- LASSO_model$dev.ratio
+  
+  results <- list(optimal_lambda = optimal_lambda, 
+                  names_nonzero_coefs = names_nonzero_coefs,
+                  nonzero_coefs = nonzero_coefs, 
+                  MSE_train = mse_train, 
+                  MSE_test = mse_test,
+                  R_squared = R_squared)
+  
+  return(results)
+
+}
+```
+
+# Example Usage of the Function on the `mtcars` Dataset Built Into R
+
+Here, I get the `mctcars` dataset from R, move the `mpg` variable I aim to predict to the last column of the dataset, and run my function on the now properly prepared dataset. 
+
+```{r}
+data(mtcars)
+```
+
+```{r}
+# Get the column index of "mpg"
+mpg_index <- which(names(mtcars) == "mpg")
+
+# Move the "mpg" column to the end
+mtcars <- mtcars[, c(setdiff(seq_along(mtcars), mpg_index), mpg_index)]
+```
+
+Below, I run my function on the `mtcars` dataset, where I aim to predict the `mpg` variable using all of the other variables. I save the outputs of the function into the variable `output.` To access the contents inside this variable, use the "$" sign as such:
+
+output$R_squared
+
+**NOTE:** If you want to generate the same results from your LASSO modeling, please put "set.seed(a)" where a can be any integer. This ensures you get the same output results each time you run the code chunk below. 
+
+
+```{r}
+set.seed(2023)
+
+output <- LassoPredictiveModeling(data = mtcars, train_prop = .60, folds = 3,
+                        a = 1, b = 10, lambda_min = TRUE)
+output
+```
+
+
+# Viewing the Functional Form of your Final LASSO Model
+
+Below, I create another function that takes the the non-zero coefficients and their corresponding variable names from the LASSO model output as inputs and display them as a functional equation.
+
+The code takes the floats vector, which contains the non-zero coefficients, and the variables vector, which contains the names of the variables associated with the coefficients. It then iterates over each element in the floats vector using a for loop. Within each iteration, it retrieves the corresponding variable name and float value and creates an equation term as a string by concatenating them together.
+
+These equation terms are stored in the equation_terms vector. After iterating through all the non-zero coefficients, the equation terms are combined into a single equation string using the paste() function, with the "+" operator used as the separator between terms. Finally, the equation string is printed with the prefix "y =" using the cat() function.
+
+By running this code chunk, you can easily view the functional form of the LASSO model by seeing the equation with the non-zero coefficients and their associated variable names.
+
+```{r}
+VisualizeEquation <- function(coefficients, variable_names) {
+  
+  # 1. Initialize an empty vector to store the equation terms
+  equation_terms <- character()
+  
+  # 2. Iterate over each element in the vector of coefficients
+  for (coef in seq_along(coefficients)) {
+    
+    # i. Get the corresponding variable name
+    variable <- variable_names[coef]
+    
+    # ii. Get the coefficient number
+    coefficient <- coefficients[coef]
+    
+    # iii. Create the equation term as a string
+    term <- paste(coefficient, variable, sep = "")
+    
+    # iv. Add the term to the equation_terms vector
+    equation_terms <- c(equation_terms, term)
+    
+  }
+  # 3. Combine the equation terms using the "+" operator
+  equation <- paste(equation_terms, collapse = " + ")
+  
+  # 4. Print the equation
+  cat("y =", equation)
+}
+
+```
+
+```{r}
+VisualizeEquation(coefficients = output$nonzero_coefs,
+                  variable_names = output$names_nonzero_coefs)
+```
+
+\( MPG = 24.6280162521846 \times \text{cyl} - 0.0185013815256383 \times \text{drat} + 0.364777852006947 \times \text{wt} - 2.27664798928809 \times \text{qsec} + 1.69171744487436 \times \text{am} + 0.904487382710526 \times \text{carb} \)
+
+
+
+# Your Turn
+
+Below, I include a code chunk that shows you how to import your dataset. Please remove the # before the line starting with data and replace "filename.csv" with the name of your file + ".csv" at the end.
+
+```{r}
+# If your data is in a CSV file
+#data <- read.csv("filename.csv")
+
+# If your data is in an excel file
+#data <- read_excel("filename.xlsx")
+```
+
+Below is the code chunk you need to run the function. Again, please remove the #'s to input your variables and run the code. 
+
+```{r}
+# set.seed(a)
+
+# output <- LassoPredictiveModeling(data = , train_prop = , folds = ,
+                        # a = , b = , lambda_min = )
+# output
+```
+
+Below is the code chunk you need to view the functional form of your final LASSO model. Again, please remove the #'s to input your variables and run the code. 
+
+```{r}
+#VisualizeEquation(coefficients = output$nonzero_coefs),
+                  #variable_names = output$names_nonzero_coefs)
+```
+
+
