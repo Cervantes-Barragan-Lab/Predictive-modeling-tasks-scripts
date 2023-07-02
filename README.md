@@ -1,8 +1,8 @@
-# R Scripts
+# Predictive Modeling Tasks and Scrtips
 
 ## Usage
 
-1. Open the R script that corresponds to the procedure you wish to run.
+1. Open the folder containing the R script(s) or Python script(s) that corresponds to the procedure you wish to run.
 
 2. Make sure the required input files are available in the designated directories or modify the script to point to the correct file paths.
 
